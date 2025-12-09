@@ -299,6 +299,7 @@ cc_library_static {
         "-Wno-unused-parameter",
         "-include netbsd-compat.h",
         "-Wframe-larger-than=66000",
+	"-DENABLE_RESOLV_EXTERNAL_DNS",
         "-include private/bsd_sys_param.h",
     ],
 

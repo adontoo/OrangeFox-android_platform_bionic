@@ -120,6 +120,12 @@ __RCSID("$NetBSD: res_init.c,v 1.8 2006/03/19 03:10:08 christos Exp $");
 
 static void res_setoptions __P((res_state, const char *, const char *));
 
+#ifdef __BIONIC__
+#ifdef ENABLE_RESOLV_EXTERNAL_DNS
+static void _resolv_load_external_dns(res_state statp);
+#endif
+#endif
+
 #ifdef RESOLVSORT
 static const char sort_mask[] = "/&";
 #define ISSORTMASK(ch) (strchr(sort_mask, ch) != NULL)
@@ -243,7 +249,10 @@ __res_vinit(res_state statp, int preinit) {
 	res_setservers(statp, u, nserv);
 
 #if defined(__BIONIC__)
-	/* Ignore the environment. */
+#ifdef ENABLE_RESOLV_EXTERNAL_DNS
+	/* Try to read DNS servers from external sources */
+	_resolv_load_external_dns(statp);
+#endif
 #else
 	/* Allow user to override the local domain definition */
 	if ((cp = getenv("LOCALDOMAIN")) != NULL) {
@@ -488,6 +497,74 @@ __res_vinit(res_state statp, int preinit) {
 	}
 	return (0);
 }
+
+#ifdef __BIONIC__
+#ifdef ENABLE_RESOLV_EXTERNAL_DNS
+/*
+ * _resolv_load_external_dns() loads DNS servers from /etc/resolv.conf
+ */
+static void
+_resolv_load_external_dns(res_state statp)
+{
+	union res_sockaddr_union u[3];
+	int num_servers = 0;
+	FILE *fp;
+	char line[256];
+	char *token;
+
+	fp = fopen("/etc/resolv.conf", "r");
+	if (fp == NULL) {
+		return;
+	}
+
+	while (fgets(line, sizeof(line), fp) != NULL && num_servers < 3) {
+		/* Skip comments and empty lines */
+		if (line[0] == '#' || line[0] == '\n' || line[0] == '\0') {
+			continue;
+		}
+		/* Look for "nameserver" line */
+		if (strncmp(line, "nameserver", 10) == 0) {
+			token = line + 10;
+			/* Skip whitespace */
+			while (*token == ' ' || *token == '\t') {
+				token++;
+			}
+			/* Remove newline */
+			char *newline = strchr(token, '\n');
+			if (newline != NULL) {
+				*newline = '\0';
+			}
+			/* Validate IP address */
+			struct sockaddr_in sa;
+			struct sockaddr_in6 sa6;
+			if (inet_pton(AF_INET, token, &sa.sin_addr) == 1) {
+				u[num_servers].sin.sin_family = AF_INET;
+				u[num_servers].sin.sin_addr = sa.sin_addr;
+				u[num_servers].sin.sin_port = htons(NAMESERVER_PORT);
+#ifdef HAVE_SA_LEN
+				u[num_servers].sin.sin_len = sizeof(struct sockaddr_in);
+#endif
+				num_servers++;
+			} else if (inet_pton(AF_INET6, token, &sa6.sin6_addr) == 1) {
+				u[num_servers].sin6.sin6_family = AF_INET6;
+				u[num_servers].sin6.sin6_addr = sa6.sin6_addr;
+				u[num_servers].sin6.sin6_port = htons(NAMESERVER_PORT);
+#ifdef HAVE_SA_LEN
+				u[num_servers].sin6.sin6_len = sizeof(struct sockaddr_in6);
+#endif
+				num_servers++;
+			}
+		}
+	}
+	fclose(fp);
+
+	/* If we found DNS servers, use them */
+	if (num_servers > 0) {
+		res_setservers(statp, u, num_servers);
+	}
+}
+#endif /* ENABLE_RESOLV_EXTERNAL_DNS */
+#endif /* __BIONIC__ */
 
 static void
 res_setoptions(res_state statp, const char *options, const char *source)
